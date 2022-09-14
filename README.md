@@ -34,7 +34,7 @@ or visit: http://github.com/bonsudev/diffsim
 
 ## Library Usage and Examples
 
-### Simulate ZnO Diffraction Pattern
+### Simulate Diffraction Pattern
 
 ```python
 # 
