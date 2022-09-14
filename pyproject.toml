@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel", "numba", "numpy", "mpi4py"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffsim"
+version = "1.0"
+authors = [
+  { name="Marcus Newton", email="Bonsu.Devel@gmail.com" },
+  { name="Ahmed Mohamed", email="Bonsu.Devel@gmail.com"},
+]
+description = "Calculate diffraction patterns from first principles"
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+	"Environment :: GPU :: NVIDIA CUDA",
+	"Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/bonsudev/diffsim"
+"Bug Tracker" = "https://github.com/bonsudev/diffsim/issues"
