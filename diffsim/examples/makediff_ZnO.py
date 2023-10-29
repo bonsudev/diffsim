@@ -11,6 +11,8 @@ from diffsim import DiffSim
 
 d = DiffSim()
 d.meta_name = "ZnO"
+# Complex Index of Refraction
+d.SetRefractiveIndex(1.0-10**(-5) + 1j*10**-7)
 # Wurtzite structure 
 # unit cell in nm
 crystal_a = 0.325 # ZnO
@@ -96,10 +98,15 @@ d.Prepare()
 d.SetThetaMax(max=0.0967) #(rad)
 # Save parameters
 d.SaveParameters()
+# Object
+d.CalcObject()
+d.CalcObjectCoords()
+d.SaveObject()
+d.SaveObjectCoords()
 # Rocking curve
+d.CalcRockingCurveThreads()
 d.CalcRockingCurveGPU()
-#d.CalcRockingCurveThreads()
-#d.CalcRockingCurveMPI()
+d.CalcRockingCurveMPI()
 # Save result
 d.SaveDiffraction()
 

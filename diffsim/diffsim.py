@@ -4,7 +4,7 @@
 # Feature to parameterise displaced atoms (strain).
 #
 # Author: Marcus Newton
-# Version 1.0
+# Version 1.1
 # Licence: GNU GPL 3
 #
 # ###########################################
@@ -12,11 +12,14 @@
 import numpy
 from math import sqrt, atan, atan2, asin, sin, cos, fabs, ceil
 from mpi4py import MPI
-import threading
 from time import strftime
 from inspect import getsource, signature
+
 from . import diffsim_gpu_kernels
-from os import sched_getaffinity
+from . import diffsim_cpu_kernels
+from . import diffsim_mpi_kernels
+
+
 
 class DiffSim():
 	"""
@@ -42,6 +45,7 @@ class DiffSim():
 		self.n0 = 1.0
 		self.waveln = 0.0 # (nm)
 		self.energy = 0.0 # (keV)
+		self.n = 1.0 # complex index of refraction
 		self.k = 0.0 # (1/nm)
 		self.theta = 0.0 #(rad)
 		self.dtheta = 0.0 #(rad)
@@ -69,16 +73,18 @@ class DiffSim():
 		self.pixelxy = numpy.zeros((2), dtype=self.float)
 		self.detsize = numpy.zeros((2), dtype=self.int)
 		self.alphakf = numpy.zeros((2), dtype=self.float)
-		self.shapearray = None # Object shape function
+		self.shapearray = None 
 		self.flatshapearray = None
+		self.refractionarray = None
+		self.flatrefractionarray = None
 		self.ijks = None
 		self.Rvec = None
-		self.diffarray = None # Diffraction pattern
-		self.diffarrayblock = None # Diffraction pattern block
+		self.diffarray = None 
+		self.diffarrayblock = None 
 		self.object = None
 		self.flatobject = None
 		self.coordarray = None
-		self.meta_name = "" # Simulation name
+		self.meta_name = "" 
 		self.datestr = ""
 	def SetLatticeVector(self, index, vector):
 		"""
@@ -144,7 +150,6 @@ class DiffSim():
 					arraybin[(nx-subshp[0]):nx,(ny-subshp[1]):ny,(nz-subshp[2]):nz] +=\
 					arobj[i::self.bin[0],j::self.bin[1],k::self.bin[2]]
 		return (1.0/amp)*arraybin
-
 	def SetShapeArray(self, filename):
 		"""
 		Set the shape function array.
@@ -164,8 +169,7 @@ class DiffSim():
 			self.Rvec = numpy.ascontiguousarray(numpy.dot(self.ijks,self.alattice), dtype=self.float)
 		else:
 			self.Rvec = numpy.ascontiguousarray(numpy.dot(numpy.transpose(numpy.unravel_index(numpy.arange(n), shape))*self.bin,self.alattice), dtype=self.float)
-
-	def _SetShapeArrayFromNormals(self, arraysize, normals):
+	def SetShapeArrayFromNormals(self, arraysize, normals):
 		"""
 		Create a shape function array
 		of 3D size 'arraysize' with facets
@@ -195,10 +199,6 @@ class DiffSim():
 			norm = norm * (1.0/numpy.sqrt(numpy.dot(norm,norm)))
 			inout *= numpy.dot((xyzs - init),norm) < 0
 		flatarobj[inout] = 1
-		#self.shapearray = arobj.astype(numpy.uint8)
-		#self.flatshapearray = flatarobj
-		#self.ijks = xyzs
-		#self.Rvec = numpy.dot(self.ijks,self.alattice)
 		self.shapearray = numpy.ascontiguousarray(self.BinArray(arobj), dtype=numpy.uint8)
 		del arobj
 		del flatarobj
@@ -214,35 +214,20 @@ class DiffSim():
 			self.Rvec = numpy.ascontiguousarray(numpy.dot(self.ijks,self.alattice), dtype=self.float)
 		else:
 			self.Rvec = numpy.ascontiguousarray(numpy.dot(numpy.transpose(numpy.unravel_index(numpy.arange(n), shape))*self.bin,self.alattice), dtype=self.float)
-	def SetShapeArrayFromNormals(self, arraysize, normals):
-		# arobj = numpy.zeros(arraysize, dtype=self.float)
-		shp = arraysize
-		nx = (shp[0]+self.bin[0] -1)//self.bin[0]
-		ny = (shp[1]+self.bin[1] -1)//self.bin[1]
-		nz = (shp[2]+self.bin[2] -1)//self.bin[2]
-		npoints = nx*ny*nz
-		n = self.mpi_size
-		ni = self.mpi_rank
-		comm = MPI.COMM_WORLD
-		# if ni == 0:
-		# 	self._SetShapeArrayFromNormals(arraysize, normals)
-		# else:
-		# 	self.shapearray = numpy.empty((nx,ny,nz), dtype=numpy.uint8, order='C')
-		# comm.Bcast(self.shapearray, root=0)
-		self._SetShapeArrayFromNormals(arraysize, normals)
-		if ni != 0:
-			self.flatshapearray = numpy.empty(npoints, dtype=numpy.uint8, order='C')
-		comm.Bcast(self.flatshapearray, root=0)
-		if len(self.atomfunctions) > 0:
-			if ni != 0:
-				self.ijks = numpy.empty([npoints,3], dtype=numpy.int32, order='C')
-			comm.Bcast(self.ijks, root=0)
-		if ni != 0:
-			self.Rvec = numpy.empty([npoints,3], dtype=self.float, order='C')
-		comm.Bcast(self.Rvec, root=0)
 	def SaveShapeArray(self, name):
 		if self.mpi_rank == 0:
 			numpy.save(name, self.shapearray)
+	def SetRefractiveIndex(self, n):
+		"""
+		Set complex index of refraction
+		"""
+		self.n = n
+	def SetRefractionArray(self):
+		shape = self.shapearray.shape
+		n = numpy.prod(self.shapearray.shape)
+		self.refractionarray = numpy.zeros(shape, dtype=self.float)
+		diffsim_cpu_kernels.CalcRefractionCPU(self.k_f, self.alattice, self.bin, self.shapearray, self.refractionarray)
+		self.flatrefractionarray = numpy.ascontiguousarray(self.refractionarray.reshape((n)), dtype=self.float)
 	def SetDetPixelSize(self, dx, dy):
 		"""
 		Set the detector pixel size
@@ -371,43 +356,6 @@ class DiffSim():
 		self.R = self.float(0.5*(self.pixelxy[0]+self.pixelxy[1])*self.beta*\
 							self.k*((self.binbits*numpy.sum(self.shapearray))**(1/3))*\
 							a_av*10.0**(-6))
-	def CalcDetAlpha(self, i, j):
-		"""
-		Returns K_ip rotation angles.
-		"""
-		alphakf_i = 0.0
-		alphakf_j = 0.0
-		if i < self.detsize[0] and j < self.detsize[1]:
-			alphakf_i = atan((10.0**(-6))*self.pixelxy[0] * (i - self.detsize[0]/2.0)/self.R)
-			alphakf_j = atan((10.0**(-6))*self.pixelxy[1] * (j - self.detsize[1]/2.0)/self.R)
-		return alphakf_i,alphakf_j
-	def SetDetAlpha(self, i, j):
-		"""
-		Set K_ip rotation angles.
-		"""
-		self.alphakf[0],self.alphakf[1] = self.CalcDetAlpha(i,j)
-	def CalcKfp(self, alphakf):
-		"""
-		Creat k_fp vector from k_f and alpha.
-		1) find vector k_i * k_f.
-		2) Rotate to Z and use angle to rotate k_f
-		   about z
-		3) rotate back.
-		4) repeat for the other alpha angle.
-		"""
-		knorm = numpy.cross(self.k_i, self.k_f)
-		knormmag, thx, thz = self.RotateToZ(knorm)
-		k_f1 = self.RX(self.k_f, 2, -thz)
-		k_f2 = self.RX(k_f1, 0, -thx)
-		k_f3 = self.RX(k_f2, 2, alphakf[1])
-		k_f4 = self.RX(k_f3, 0, thx)
-		k_f5 = self.RX(k_f4, 2, thz)
-		Qmag, thx, thz = self.RotateToZ(self.Q)
-		k_f1 = self.RX(k_f5, 2, -thz)
-		k_f2 = self.RX(k_f1, 0, -thx)
-		k_f3 = self.RX(k_f2, 2, alphakf[0])
-		k_f4 = self.RX(k_f3, 0, thx)
-		return self.RX(k_f4, 2, thz)
 	def RotateKiKfQ(self, theta, k_i, k_f, Q):
 		"""
 		Rotate ki and kf by amount theta
@@ -431,11 +379,6 @@ class DiffSim():
 		self.Q[:] = self.RX(Q4, 2, thz)
 		self.Qmag = sqrt(numpy.dot(self.Q,self.Q))
 		self.Qhat[:] = self.Q / self.Qmag
-	def SetKfp(self):
-		"""
-		Set  k_fp vector
-		"""
-		self.k_fp[:] = self.CalcKfp()
 	def SetS(self):
 		"""
 		Calculate structure factor S(Q).
@@ -487,7 +430,6 @@ class DiffSim():
 	def CalcAtomDisplacement(self):
 		"""Calculate the displacement in position of all unit cells
 		"""
-
 		n = len(self.atoms)
 		atomR = numpy.zeros((n,len(self.Rvec),3), dtype=self.float)
 		for i in range(1,n,1):
@@ -496,33 +438,7 @@ class DiffSim():
 			for f in self.atomfunctions:
 				if f[0] == i:
 					atomR[i,:] += numpy.dot(f[1](self.ijks), self.alattice)
-
 		return atomR
-	def CalcPixelScatter(self, k_fp, atomR):
-		"""
-		Calculate scattering intensity into a single pixel.
-		Units: photons.
-		@param k_fp numpy array of size 3
-		@param self.k_i numpy array of size 3
-		@param self.Rvec numpy array of size (3, ?)
-		"""
-		q = k_fp - self.k_i
-		expsum = 0.0
-		if len(self.atomfunctions) > 0:
-			n = len(self.atoms)
-			for i in range(1,n,1):
-				expsum += self.atoms[i,0] * numpy.sum(self.flatshapearray * numpy.exp(1j*numpy.dot(atomR[i],q)))
-
-			gam = self.exposure*self.pixelxy[0]*self.pixelxy[1]*self.r0*self.r0*\
-						self.binbits * self.binbits *\
-						self.flux*(expsum.real*expsum.real + expsum.imag*expsum.imag)/(self.R*self.R)
-		else:
-			expsum = numpy.sum(self.flatshapearray * numpy.exp(1j*numpy.dot(self.Rvec,q)))
-			gam = self.exposure*self.pixelxy[0]*self.pixelxy[1]*self.r0*self.r0*\
-						self.flux*(self.S.real*self.S.real+self.S.imag*self.S.imag)*\
-						self.binbits * self.binbits *\
-						(expsum.real*expsum.real + expsum.imag*expsum.imag)/(self.R*self.R)
-		return gam
 	def Prepare(self):
 		"""
 		Set up paramaters.
@@ -537,44 +453,7 @@ class DiffSim():
 		self.SetS()
 		self.SetIntensity()
 		self.SetThetaMax()
-	def Subdivide(self, n, shape):
-		x,y,z = shape
-		div = [1,1,1]
-		i = 0
-		while i < 6:
-			if ((div[0]+1)*div[1]*div[2] < n) and (div[0]+1) <= x:
-				div[0] += 1
-				i = 0
-			if (div[0]*(div[1]+1)*div[2] < n) and (div[1]+1) <= y:
-				div[1] += 1
-				i = 0
-			if (div[0]*div[1]*(div[2]+1) < n) and (div[2]+1) <= z:
-				div[2] += 1
-				i = 0
-			i += 1
-		chunks = numpy.zeros((n,6), dtype=numpy.int64)
-		ii=0
-		xblk = x//div[0]
-		yblk = y//div[1]
-		zblk = z//div[2]
-		for k in range(div[2]+1):
-			for j in range(div[1]):
-				for i in range(div[0]):
-					if ii >= n:
-						break
-					chunks[ii,:] = [xblk*i, xblk*(i+1), yblk*j, yblk*(j+1), zblk*k, zblk*(k+1)]
-					ii += 1
-		for ii in range(div[0]*div[1]*div[2],n,1):
-			if chunks[ii,1] > x:
-				chunks[ii,1] = x
-			if chunks[ii,3] > y:
-				chunks[ii,3] = y
-			if chunks[ii,5] > z:
-				chunks[ii,5] = z
-		chunks[-1,1] = x
-		chunks[-1,3] = y
-		chunks[-1,5] = z
-		return chunks
+		self.SetRefractionArray()
 	def CalcObject(self):
 		if len(self.atomfunctions) > 0:
 			n = len(self.atoms)
@@ -600,49 +479,58 @@ class DiffSim():
 		self.coordarray = numpy.zeros((self.object.size,3), dtype=numpy.double)
 		X = numpy.array([[float(x)*mx, float(y)*my, float(z)*mz] for z in range(shp[2]) for y in range(shp[1]) for x in range(shp[0])], dtype=numpy.double)
 		self.coordarray[:] = numpy.dot(X,latt)
-	def _CalcThread(self, block, atomR, idk):
-		for idj in range(block[2], block[3], 1):
-			for idi in range(block[0], block[1], 1):
-				alphakf = self.CalcDetAlpha(idi,idj)
-				k_fp = self.CalcKfp(alphakf) # and this
-				self.diffarray[idi,idj,idk] = self.CalcPixelScatter(k_fp, atomR) # and this
-	def CalcRockingCurveThreads(self, nthreads=None):
+
+	def CalcRockingCurveThreads(self):
 		ki = self.k_i.copy()
 		kf = self.k_f.copy()
 		Q = self.Q.copy()
 		steps = int(self.thetamax/self.dtheta)
-		# #
+		
 		x,y,z = self.detsize[0],self.detsize[1],steps
 		self.diffarray = numpy.zeros((self.detsize[0],self.detsize[1],steps), dtype=self.float)
-		# Compute the atom displacements
-		atomR = self.CalcAtomDisplacement()
-		# threads
-		if nthreads == None:
-			n = len(sched_getaffinity(0))
-		else:
-			n = nthreads
-		blocks = self.Subdivide(n, [x,y,1])
-		# 
-		for i in range(steps):
-			thetarock = i*self.dtheta - self.thetamax/2.0
+		
+		# Arrays for pre-calculated quanities, to be passed to the CPU threads
+		k_i_array = numpy.ones((z,3), dtype=self.float)
+		k_f_array = numpy.ones((z, 3), dtype=self.float)
+		Q_array = numpy.ones((z, 3), dtype=self.float)
+		s_array = numpy.ones(z, dtype=self.complex)
+
+		# Calculate Q, k_i and k_f for each (z) pixel, to be passed to the CPU threads
+		for idk in range(z):
+			thetarock = idk*self.dtheta - self.thetamax/2.0
 			self.RotateKiKfQ(thetarock, ki, kf, Q)
 			self.SetS()
-			threads = []
-			for t in range(n):
-				block = blocks[t]
-				thread = threading.Thread(target=self._CalcThread, args=(block, atomR, i))
-				thread.start()
-				threads.append(thread)
-			for thread in threads:
-				if thread.is_alive():
-					thread.join()
-		##
+			Q_array[idk] = self.Q
+			s_array[idk] = self.S
+			k_i_array[idk] = self.k_i
+			k_f_array[idk] = self.k_f
+		
+		# Compute the atom displacements
+		atomR = self.CalcAtomDisplacement()
+		
+		# Compute the intensity for each (x, y, z) pixel in one call
+		if len(self.atomfunctions) > 0:
+			diffsim_cpu_kernels.CalcPixelScatterCPU(
+				self.atoms, k_f_array, k_i_array, Q_array, atomR, 
+				self.exposure, self.binbits, self.pixelxy, self.detsize,
+				self.r0, self.flux, self.k, self.R, self.n,
+				self.flatshapearray, self.flatrefractionarray, self.diffarray
+			)
+		else:
+			diffsim_cpu_kernels.CalcPixelScatterNoAtomFuncCPU(
+				k_f_array, k_i_array, Q_array, self.Rvec, 
+				self.exposure, self.binbits, self.pixelxy, self.detsize,
+				self.r0, self.flux, self.k, self.R, self.n, s_array,
+				self.flatshapearray, self.flatrefractionarray, self.diffarray
+			)
+		
+		
 	def CalcRockingCurveGPU(self):
 		ki = self.k_i.copy()
 		kf = self.k_f.copy()
 		Q = self.Q.copy()
 		steps = int(self.thetamax/self.dtheta)
-		##
+		
 		x,y,z = self.detsize[0],self.detsize[1],steps
 		self.diffarray = numpy.zeros((self.detsize[0],self.detsize[1],steps), dtype=self.float)
 
@@ -669,56 +557,82 @@ class DiffSim():
 		if len(self.atomfunctions) > 0:
 			diffsim_gpu_kernels.CalcPixelScatterGPU[(ceil(x/64),y,z),(64,1,1)](
 				self.atoms, k_i_array, k_f_array, atomR, Q_array, self.exposure, self.binbits, self.pixelxy,
-				self.detsize, self.r0, self.flux, self.R, self.flatshapearray, self.diffarray
+				self.detsize, self.r0, self.flux, self.k, self.R, self.n, self.flatshapearray, self.flatrefractionarray, self.diffarray
 			)
 		else:
 			diffsim_gpu_kernels.CalcPixelScatterNoAtomFuncGPU[(ceil(x/64),y,z),(64,1,1)](
 				k_f_array, k_i_array, Q_array, self.Rvec, self.exposure, self.binbits, self.pixelxy, self.detsize,
-				self.r0, self.flux, self.R, self.flatshapearray, s_array, self.diffarray
+				self.r0, self.flux, self.k, self.R, self.n, self.flatshapearray, self.flatrefractionarray, s_array, self.diffarray
 			)
+		
+	
 	def CalcRockingCurveMPI(self):
 		ki = self.k_i.copy()
 		kf = self.k_f.copy()
 		Q = self.Q.copy()
 		steps = int(self.thetamax/self.dtheta)
-		##
+		
 		x,y,z = self.detsize[0],self.detsize[1],steps
-		n = self.mpi_size
-		ni = self.mpi_rank
-		blocks = self.Subdivide(n, [x,y,z])
+		
+		comm = MPI.COMM_WORLD
+		mpi_size = comm.Get_size()
+		mpi_rank = comm.Get_rank()
+		
+		n = mpi_size
+		ni = mpi_rank
+		blocks = diffsim_mpi_kernels.Subdivide(n, [x,y,z])
 		block = blocks[ni]
 		blkx = block[1] - block[0]
 		blky = block[3] - block[2]
 		blkz = block[5] - block[4]
+
+		diffarrayblock = numpy.zeros((blkx,blky,blkz), dtype=self.float)
+		
 		if ni == 0:
 			self.diffarray = numpy.zeros((self.detsize[0],self.detsize[1],steps), dtype=self.float)
-		self.diffarrayblock = numpy.zeros((blkx,blky,blkz), dtype=self.float)
+		
+		# Arrays for pre-calculated quanities, to be passed to the CPU
+		k_i_array = numpy.ones((z,3), dtype=self.float)
+		k_f_array = numpy.ones((z, 3), dtype=self.float)
+		Q_array = numpy.ones((z, 3), dtype=self.float)
+		s_array = numpy.ones(z, dtype=self.complex)
 
-		# Compute the atom displacements
-		atomR = self.CalcAtomDisplacement()
-
-		for idk in range(block[4], block[5], 1):
+		# Calculate Q, k_i and k_f for each (z) pixel, to be passed to the CPU
+		for idk in range(z):
 			thetarock = idk*self.dtheta - self.thetamax/2.0
 			self.RotateKiKfQ(thetarock, ki, kf, Q)
 			self.SetS()
-
-			for idj in range(block[2], block[3], 1):
-				for idi in range(block[0], block[1], 1):
-					alphakf = self.CalcDetAlpha(idi,idj)
-					k_fp = self.CalcKfp(alphakf)
-					blki = idi - block[0]
-					blkj = idj - block[2]
-					blkk = idk - block[4]
-					self.diffarrayblock[blki,blkj,blkk] = self.CalcPixelScatter(k_fp, atomR)
-		##
-		comm = MPI.COMM_WORLD
+			Q_array[idk] = self.Q
+			s_array[idk] = self.S
+			k_i_array[idk] = self.k_i
+			k_f_array[idk] = self.k_f
+		
+		# Compute the atom displacements
+		atomR = self.CalcAtomDisplacement()
+		
+		# Compute the intensity for each (x, y, z) pixel in one call
+		if len(self.atomfunctions) > 0:
+			diffsim_mpi_kernels.CalcPixelScatterMPI(
+				block, self.atoms, k_f_array, k_i_array, Q_array, atomR, 
+				self.exposure, self.binbits, self.pixelxy, self.detsize,
+				self.r0, self.flux, self.k, self.R, self.n,
+				self.flatshapearray, self.flatrefractionarray, diffarrayblock
+			)
+		else:
+			diffsim_mpi_kernels.CalcPixelScatterNoAtomFuncMPI(
+				block, k_f_array, k_i_array, Q_array, self.Rvec, 
+				self.exposure, self.binbits, self.pixelxy, self.detsize,
+				self.r0, self.flux, self.k, self.R, self.n, s_array,
+				self.flatshapearray, self.flatrefractionarray, diffarrayblock
+			)
+		
 		if ni > 0:
-			data1 = self.diffarrayblock
+			data1 = diffarrayblock
 			data = numpy.ascontiguousarray(data1, dtype=self.float)
 			comm.Send(data, dest=0, tag=13)
-		##
+		
 		if ni == 0:
-			self.diffarray[block[0]:block[1],block[2]:block[3],block[4]:block[5]] = self.diffarrayblock[:]
+			self.diffarray[block[0]:block[1],block[2]:block[3],block[4]:block[5]] = diffarrayblock[:]
 			for i in range(1,n,1):
 				block = blocks[i]
 				blkx = block[1] - block[0]
@@ -728,6 +642,7 @@ class DiffSim():
 				data = numpy.ascontiguousarray(data1, dtype=self.float)
 				comm.Recv(data, source=i, tag=13)
 				self.diffarray[block[0]:block[1],block[2]:block[3],block[4]:block[5]] = data[:]
+		
 
 	def SaveParameters(self):
 		if self.mpi_rank == 0:
@@ -767,14 +682,19 @@ class DiffSim():
 			f = open('DiffSim_'+self.meta_name+'_'+self.datestr+'.txt', "w")
 			f.write(params)
 			f.close()
+
 	def SaveObject(self, name=None):
-		if name is None:
-			name = "Object_"+self.meta_name+("_[%d%d%d]_"%(self.hkl[0],self.hkl[1],self.hkl[2]))+self.datestr+'.npy'
-		numpy.save(name, self.object)
+		if self.mpi_rank == 0:
+			if name is None:
+				name = "Object_"+self.meta_name+("_[%d%d%d]_"%(self.hkl[0],self.hkl[1],self.hkl[2]))+self.datestr+'.npy'
+			numpy.save(name, self.object)
+
 	def SaveObjectCoords(self, name=None):
-		if name is None:
-			name = "ObjectCoords_"+self.meta_name+("_[%d%d%d]_"%(self.hkl[0],self.hkl[1],self.hkl[2]))+self.datestr+'.npy'
-		numpy.save(name, self.coordarray)
+		if self.mpi_rank == 0:
+			if name is None:
+				name = "ObjectCoords_"+self.meta_name+("_[%d%d%d]_"%(self.hkl[0],self.hkl[1],self.hkl[2]))+self.datestr+'.npy'
+			numpy.save(name, self.coordarray)
+
 	def SaveDiffraction(self, name=None):
 		if self.mpi_rank == 0:
 			if name is None:
@@ -789,6 +709,8 @@ if __name__=="__main__":
 	#from diffsim import DiffSim
 	d = DiffSim()
 	d.meta_name = "ZnO"
+	# Complex Index of Refraction
+	d.SetRefractiveIndex(1.0-10**(-5) + 1j*10**-7)
 	# Wurtzite structure
 	# unit cell in nm
 	crystal_a = 0.325 # ZnO
@@ -873,9 +795,9 @@ if __name__=="__main__":
 	d.CalcObject()
 	d.CalcObjectCoords()
 	# Rocking curve
-	# d.CalcRockingCurveThreads()
+	d.CalcRockingCurveThreads()
 	# d.CalcRockingCurveMPI()
-	d.CalcRockingCurveGPU()
+	# d.CalcRockingCurveGPU()
 	# Save result
 	d.SaveObject()
 	d.SaveObjectCoords()

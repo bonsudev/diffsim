@@ -1,7 +1,7 @@
 # #######################################
 # filename: makediff_BTO.py
 # 
-# Example script showing how to use diffsim_mpi.py
+# Example script showing how to use diffsim.py
 # 
 # #######################################
 
@@ -12,6 +12,8 @@ from scipy import signal
 
 d = DiffSim()
 d.meta_name = "BTO_SquareWave"
+# Complex Index of Refraction
+d.SetRefractiveIndex(1.0-10**(-5) + 1j*10**-7)
 # Tetragonal structure 
 # unit cell in nm
 crystal_a = 0.39925
@@ -88,8 +90,8 @@ d.CalcObject()
 d.CalcObjectCoords()
 d.SaveObject()
 d.SaveObjectCoords()
-d.CalcRockingCurveGPU()
-#d.CalcRockingCurveThreads()
+d.CalcRockingCurveThreads()
+#d.CalcRockingCurveGPU()
 #d.CalcRockingCurveMPI()
 d.SaveDiffraction()
 

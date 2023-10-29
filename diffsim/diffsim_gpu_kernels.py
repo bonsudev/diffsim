@@ -4,7 +4,7 @@
 # Feature to parameterise displaced atoms (strain).
 #
 # Author: Marcus Newton
-# Version 1.0
+# Version 1.1
 # Licence: GNU GPL 3
 #
 # ###########################################
@@ -175,7 +175,8 @@ def CalcDetAlphaGPU(idi, idj, pixelxy, detsize, R):
 
 @cuda.jit()
 def CalcPixelScatterGPU(atoms, k_i, k_f, atomR, Q, exposure, binbits, pixelxy,
-												detsize, r0, flux, R, flatshapearray, gam_out):
+							detsize, r0, flux, kmag, R, refidx, flatshapearray,
+							flatrefractionarray, gam_out):
 	"""Calculate the scattering intensity for a pixel.
 
 	Computes the intensity for the pixel given by the ID of the current GPU
@@ -194,8 +195,11 @@ def CalcPixelScatterGPU(atoms, k_i, k_f, atomR, Q, exposure, binbits, pixelxy,
 	detsize: numpy int array (2,)
 	r0: float
 	flux: float
+	kmag: float
 	R: float
+	refidx: complex float
 	flatshapearray: numpy float array (nunitcells,)
+	flatrefractionarray,: numpy float array (nunitcells,)
 
 	Return
 	------
@@ -208,6 +212,9 @@ def CalcPixelScatterGPU(atoms, k_i, k_f, atomR, Q, exposure, binbits, pixelxy,
 	k_fp = cuda.local.array((3,), FLOAT)
 	alphakf = CalcDetAlphaGPU(idi, idj, pixelxy, detsize, R)
 	CalcKfpGPU(k_i[idk], k_f[idk], alphakf, Q[idk], k_fp)
+	
+	refidxRe = refidx.real
+	refidxIm = refidx.imag
 
 	q0 = k_fp[0] - k_i[idk,0]
 	q1 = k_fp[1] - k_i[idk,1]
@@ -224,8 +231,10 @@ def CalcPixelScatterGPU(atoms, k_i, k_f, atomR, Q, exposure, binbits, pixelxy,
 			atomDotProduct = atomR[i,j,0] * q0 + \
 					atomR[i,j,1] * q1 + \
 					atomR[i,j,2] * q2
-			innersumRe += flatshapearray[j] * math.cos(atomDotProduct)
-			innersumIm += flatshapearray[j] * math.sin(atomDotProduct)
+			refracRe = kmag*(refidxRe-1.0)*flatrefractionarray[j]
+			refracIm = kmag*refidxIm*flatrefractionarray[j]
+			innersumRe += flatshapearray[j] * (math.cos(atomDotProduct+refracRe)*math.cosh(refracIm) - math.cos(atomDotProduct+refracRe)*math.sinh(refracIm))
+			innersumIm += flatshapearray[j] * (math.sin(atomDotProduct+refracRe)*math.cosh(refracIm) - math.sin(atomDotProduct+refracRe)*math.sinh(refracIm))
 		expsumRe += atoms[i, 0] * innersumRe
 		expsumIm += atoms[i, 0] * innersumIm
 
@@ -235,7 +244,8 @@ def CalcPixelScatterGPU(atoms, k_i, k_f, atomR, Q, exposure, binbits, pixelxy,
 
 @cuda.jit
 def CalcPixelScatterNoAtomFuncGPU(k_f, k_i, Q, Rvec, exposure, binbits, pixelxy,
-									detsize, r0, flux, R, flatshapearray, S, gam_out):
+									detsize, r0, flux, kmag, R, refidx,
+									flatshapearray, flatrefractionarray, S, gam_out):
 	"""Calculate the scattering intensity for a pixel, when there are no atom
 	displacement functions.
 
@@ -244,7 +254,6 @@ def CalcPixelScatterNoAtomFuncGPU(k_f, k_i, Q, Rvec, exposure, binbits, pixelxy,
 
 	Parameters
 	----------
-	atoms: numpy float array (natoms, 4)
 	k_i: numpy float array (nz, 3)
 	k_f: numpy float array (nx, ny, nz, 3)
 	Q: numpy float array (nz, 3)
@@ -255,8 +264,11 @@ def CalcPixelScatterNoAtomFuncGPU(k_f, k_i, Q, Rvec, exposure, binbits, pixelxy,
 	detsize: numpy int array (2,)
 	r0: float
 	flux: float
+	kmag: float
 	R: float
+	refidx: complex float
 	flatshapearray: numpy float array (nunitcells,)
+	flatrefractionarray,: numpy float array (nunitcells,)
 	S: numpy complex float array (nz,)
 
 	Return
@@ -270,6 +282,9 @@ def CalcPixelScatterNoAtomFuncGPU(k_f, k_i, Q, Rvec, exposure, binbits, pixelxy,
 	k_fp = cuda.local.array(3, FLOAT)
 	alphakf = CalcDetAlphaGPU(idi, idj, pixelxy, detsize, R)
 	CalcKfpGPU(k_i[idk], k_f[idk], alphakf, Q[idk], k_fp)
+	
+	refidxRe = refidx.real
+	refidxIm = refidx.imag
 
 	q0 = k_fp[0] - k_i[idk,0]
 	q1 = k_fp[1] - k_i[idk,1]
@@ -281,8 +296,10 @@ def CalcPixelScatterNoAtomFuncGPU(k_f, k_i, Q, Rvec, exposure, binbits, pixelxy,
 		RVecDotProduct = Rvec[i,0]*q0+\
 				Rvec[i,1]*q1+\
 				Rvec[i,2]*q2
-		expsumRe += flatshapearray[i]*math.cos(RVecDotProduct)
-		expsumIm += flatshapearray[i]*math.sin(RVecDotProduct)
+		refracRe = kmag*(refidxRe-1.0)*flatrefractionarray[i]
+		refracIm = kmag*refidxIm*flatrefractionarray[i]
+		expsumRe += flatshapearray[i]*(math.cos(RVecDotProduct+refracRe)*math.cosh(refracIm) - math.cos(RVecDotProduct+refracRe)*math.sinh(refracIm))
+		expsumIm += flatshapearray[i]*(math.sin(RVecDotProduct+refracRe)*math.cosh(refracIm) - math.sin(RVecDotProduct+refracRe)*math.sinh(refracIm))
 
 	gam_out[idi,idj,idk] = exposure*pixelxy[0]*pixelxy[1]*r0*r0*binbits*binbits*\
 		flux*(S[idk].real*S[idk].real+S[idk].imag*S[idk].imag)*(expsumRe*expsumRe+expsumIm*expsumIm)/(R*R)
