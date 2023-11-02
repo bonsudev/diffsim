@@ -4,7 +4,7 @@
 # Feature to parameterise displaced atoms (strain).
 #
 # Author: Marcus Newton
-# Version 1.1
+# Version 1.2
 # Licence: GNU GPL 3
 #
 # ###########################################
@@ -163,7 +163,7 @@ def CalcKfpCPU(k_i, k_f, alphakf, Q, k_fp_out):
 @njit(parallel=True)
 def CalcRefractionCPU(kf, alat, bins, shapearray, refractionarray):
 	x, y, z = shapearray.shape
-	alat_inv = numpy.linalg.inv(alat)
+	alat_inv = numpy.linalg.inv(alat.T)
 	kf_lat = numpy.dot(alat_inv, kf)
 	kf_norm = kf_lat * (1.0/math.sqrt(dotCPU(kf_lat,kf_lat)))
 	p = numpy.zeros((5,), dtype=numpy.double) ## i,j,k, shape bool, count

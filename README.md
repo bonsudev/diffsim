@@ -17,6 +17,7 @@ DiffSim requires:
 * Python >= 3.7
 * Numba >= 0.58.1
 * NumPy >= 1.25.0
+* scipy
 * mpi4py
 
 
@@ -38,6 +39,11 @@ Example scripts are available in the examples folder.
 
 
 ## Version History
+
+#### Version 1.2 🗓 ️(02/11/2023)
+
+	🔧 Minor bug fixes.
+
 
 #### Version 1.1 🗓 ️(29/10/2023)
 

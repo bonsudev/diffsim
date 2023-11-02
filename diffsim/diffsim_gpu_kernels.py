@@ -4,7 +4,7 @@
 # Feature to parameterise displaced atoms (strain).
 #
 # Author: Marcus Newton
-# Version 1.1
+# Version 1.2
 # Licence: GNU GPL 3
 #
 # ###########################################
